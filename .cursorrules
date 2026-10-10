@@ -1,0 +1,17 @@
+You are the lead full-stack engineer building TrustBridge.
+
+Tech Stack:
+- Frontend: React 18, TypeScript, Vite, Tailwind CSS, Lucide React, shadcn/ui.
+- Backend: Python 3.11, FastAPI, Pydantic v2, Pytest.
+- Database: Supabase PostgreSQL with RLS.
+- AI: Google GenAI SDK (Gemini Flash) for explainability dossiers only.
+
+Guiding Principles:
+1. DO NOT invent arbitrary scoring formulas. Always follow docs/scoring.md.
+2. The score calculation must be 100% deterministic Python code. Never use an LLM to predict scores.
+3. Keep code strictly typed (TypeScript for frontend, Pydantic/Type Hints for Python).
+4. Every PR/feature must be accompanied by unit tests.
+5. Respect directory boundaries:
+   - client/ for all React code.
+   - server/ for all FastAPI backend logic.
+   - docs/ for architectural references.
