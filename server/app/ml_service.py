@@ -5,7 +5,6 @@ Probability of Default (PD) and compute game-theoretic feature attributions.
 """
 
 import os
-import sys
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -46,21 +45,7 @@ def get_model_bundle() -> Dict[str, Any]:
     model_path = find_model_path()
 
     if model_path is None or not model_path.exists():
-        logger.warning("credit_model.joblib not found in standard paths. Attempting on-demand training...")
-        try:
-            # Import train_credit_risk_model on-the-fly to auto-generate
-            server_dir = Path(__file__).resolve().parent.parent
-            if str(server_dir) not in sys.path:
-                sys.path.insert(0, str(server_dir))
-            from train_model import train_credit_risk_model, save_model
-            bundle = train_credit_risk_model(n_samples=3000, n_estimators=60)
-            target_path = Path(__file__).resolve().parent / "credit_model.joblib"
-            save_model(bundle, target_path)
-            _MODEL_BUNDLE = bundle
-            return _MODEL_BUNDLE
-        except Exception as e:
-            logger.error(f"Failed to auto-train credit risk model: {e}", exc_info=True)
-            raise RuntimeError(f"ML Credit Model unavailable: {e}")
+        raise RuntimeError("ML artifact is unavailable. Run server/train_model.py explicitly.")
 
     logger.info(f"Loading ML credit risk model from: {model_path}")
     _MODEL_BUNDLE = joblib.load(model_path)

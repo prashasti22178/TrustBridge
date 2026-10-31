@@ -38,7 +38,7 @@ export default function Navbar() {
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xl font-extrabold tracking-tight text-white group-hover:text-emerald-300 transition-colors">TrustBridge</span>
-              <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">Team Infinitix</span>
+              <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">Credit Intelligence</span>
             </div>
             <p className="text-[10px] text-slate-400 font-medium tracking-wide">FinTech Alternative Credit Platform</p>
           </div>

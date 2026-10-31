@@ -1,3 +1,4 @@
+import { useAuth } from '../context/AuthContext';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { 
@@ -26,6 +27,8 @@ import { submitApplicationApi, calculateScoreApi } from '../lib/api';
 import type { FeatureAttributionItem } from '../types/underwriter';
 
 export default function Apply() {
+  const { user } = useAuth();
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   // Step 1: Borrower Identity (Defaults set to Ravi Kumar Benchmark)
   const [fullName, setFullName] = useState<string>('Ravi Kumar');
   const [businessType, setBusinessType] = useState<string>('Fruit Stall');
@@ -52,9 +55,9 @@ export default function Apply() {
   const [whatHelped, setWhatHelped] = useState<string[]>([]);
   const [whatNeedsAttention, setWhatNeedsAttention] = useState<string[]>([]);
 
-  // Machine Learning Credit Risk & SHAP State
-  const [mlProbabilityOfDefault, setMlProbabilityOfDefault] = useState<number | null>(0.0385);
-  const [mlRiskBand, setMlRiskBand] = useState<string | null>('VERY_LOW_RISK');
+  // Experimental model output (synthetic training data) State
+  const [mlProbabilityOfDefault, setMlProbabilityOfDefault] = useState<number | null>(null);
+  const [mlRiskBand, setMlRiskBand] = useState<string | null>(null);
   const [shapContributions, setShapContributions] = useState<FeatureAttributionItem[]>([]);
   const [showShapDetails, setShowShapDetails] = useState<boolean>(false);
 
@@ -90,15 +93,9 @@ export default function Apply() {
         setConfidenceTier(res.confidence_tier);
         setWhatHelped(res.what_helped);
         setWhatNeedsAttention(res.what_needs_attention);
-        if (res.probability_of_default !== undefined) {
-          setMlProbabilityOfDefault(res.probability_of_default);
-        }
-        if (res.ml_risk_band) {
-          setMlRiskBand(res.ml_risk_band);
-        }
-        if (res.shap_feature_contributions) {
-          setShapContributions(res.shap_feature_contributions);
-        }
+        setMlProbabilityOfDefault(res.probability_of_default ?? null);
+        setMlRiskBand(res.ml_risk_band ?? null);
+        setShapContributions(res.shap_feature_contributions ?? []);
       }
     });
 
@@ -120,9 +117,11 @@ export default function Apply() {
   const handleFinalSubmit = async () => {
     if (!hasConsented) return;
     setIsSubmitting(true);
+    setSubmissionError(null);
 
     try {
       const res = await submitApplicationApi({
+        explicitConsentGiven: hasConsented,
         fullName,
         businessType,
         location,
@@ -141,7 +140,7 @@ export default function Apply() {
         setIsConsentModalOpen(false);
       }
     } catch (err) {
-      console.error('[TrustBridge] Submission error:', err);
+      setSubmissionError(err instanceof Error ? err.message : 'Application could not be saved. Please retry.');
     } finally {
       setIsSubmitting(false);
     }
@@ -166,6 +165,7 @@ export default function Apply() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 pb-20">
       
       {/* Submission Success Toast Banner */}
+      {submissionError && <p role="alert" className="m-4 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-300">{submissionError}</p>}
       {submissionSuccessId && (
         <div className="mb-8 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4 sm:p-5 shadow-xl animate-in fade-in duration-200">
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -176,7 +176,7 @@ export default function Apply() {
               <div>
                 <h4 className="text-sm font-bold text-white">Application Recorded in Live Database</h4>
                 <p className="text-xs text-emerald-300">
-                  Reference ID: <strong className="font-mono text-white">{submissionSuccessId}</strong> for <strong>{fullName}</strong> with Trust Score <strong>{compositeScore}/100</strong>. It is now queued in Supabase for certified underwriter review.
+                  Reference ID: <strong className="font-mono text-white">{submissionSuccessId}</strong> for <strong>{fullName}</strong> with Trust Score <strong>{compositeScore}/100</strong>. {user?.isDemo ? 'Saved in this demo session only; it will disappear when the page reloads.' : 'Saved for human underwriter review.'}
                 </p>
               </div>
             </div>
@@ -543,7 +543,7 @@ export default function Apply() {
 
             </div>
 
-            {/* Machine Learning Credit Risk & SHAP Card */}
+            {/* Experimental model output (synthetic training data) Card */}
             {mlProbabilityOfDefault !== null && (
               <div className="mt-4 pt-4 border-t border-slate-800">
                 <div className="p-3.5 rounded-2xl bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-950 border border-indigo-500/20">
@@ -560,7 +560,7 @@ export default function Apply() {
                           </span>
                         </h4>
                         <p className="text-[10px] text-slate-400">
-                          Empirical loan default risk forecast
+                          Experimental output from synthetic training data; not a validated default forecast.
                         </p>
                       </div>
                     </div>
@@ -645,7 +645,7 @@ export default function Apply() {
                 <ul className="text-xs space-y-1.5 text-slate-300">
                   <li className="flex items-center gap-2">
                     <span className="text-emerald-400 font-bold">✓</span>
-                    <span><strong>Business information:</strong> Stall tenure ({stallMonths}m), category, physical geo-tag</span>
+                    <span><strong>Business information:</strong> Stall tenure ({stallMonths}m), category, declared location</span>
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="text-emerald-400 font-bold">✓</span>
@@ -657,7 +657,7 @@ export default function Apply() {
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="text-emerald-400 font-bold">✓</span>
-                    <span><strong>Uploaded evidence:</strong> Invoices, rental slips, UPI transaction logs</span>
+                    <span><strong>Evidence:</strong> No uploaded documents are verified by this form.</span>
                   </li>
                 </ul>
 

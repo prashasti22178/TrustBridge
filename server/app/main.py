@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timezone
 import uuid
 from typing import Dict, Any, List, Optional
@@ -33,7 +34,7 @@ from app.engine import (
 from app.gemini_service import generate_underwriting_narrative
 from app.seed_data import SEED_BORROWERS, RESEARCH_EVIDENCE_MATRIX
 from app.auth_dependency import get_current_user, require_role
-from app.upload_service import process_secure_upload
+from app.upload_service import process_secure_upload, MAX_FILE_SIZE_BYTES
 from app.assistant_service import generate_assistant_response
 from app.ml_service import predict_credit_risk
 
@@ -57,13 +58,10 @@ async def global_safe_exception_handler(request: Request, exc: Exception):
 # Configure CORS for local development and client frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "*"
-    ],
-    allow_credentials=True,
+    allow_origins=[origin.strip() for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",") if origin.strip() and origin.strip() != "*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -121,8 +119,8 @@ def health_check():
         "service": "trustbridge-scoring-engine",
         "version": "2.0.0",
         "engine": "deterministic-v2-plus-ml-risk",
-        "ml_model": "RandomForest-v1.0",
-        "shap_explainer": "active",
+        "ml_model": "experimental-synthetic-data-model",
+        "shap_explainer": "optional; availability checked during scoring",
         "ai_explanation_model": "gemini-2.5-flash",
         "architecture": "multi-borrower-enterprise"
     }
@@ -171,28 +169,22 @@ def calculate_score_endpoint(signals: SignalInput) -> ScoreOutput:
     Random Forest Classifier trained on informal micro-credit cashflows
     SHAP TreeExplainer game-theoretic additive feature contributions
     """
+    result = calculate_trust_score(signals)
     try:
-        # 1. Deterministic 3-pillar calculation
-        result = calculate_trust_score(signals)
-
-        # 2. Machine Learning Default Probability & SHAP Attribution
         ml_prediction = predict_credit_risk(signals, result)
         result.probability_of_default = ml_prediction.probability_of_default
         result.ml_risk_band = ml_prediction.risk_band
         result.shap_feature_contributions = ml_prediction.shap_contributions
         result.ml_model_details = ml_prediction
-
-        return result
-    except Exception as e:
-        logger.error(f"Scoring calculation failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Scoring calculation failed: {str(e)}"
-        )
+    except Exception:
+        # Optional ML must not break the independent, deterministic score.
+        logger.warning("Experimental ML unavailable; returning deterministic score only", exc_info=True)
+    return result
 
 
 @app.post(
     "/api/v1/explain",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["AI Explainability"]
 )
@@ -204,7 +196,7 @@ def explain_underwriting_endpoint(applicant_data: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Explanation generation failed: {str(e)}"
+            detail="Explanation is temporarily unavailable."
         )
 
 
@@ -214,6 +206,7 @@ def explain_underwriting_endpoint(applicant_data: Dict[str, Any]):
 
 @app.get(
     "/api/v1/borrowers",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["Borrowers"]
 )
@@ -230,6 +223,7 @@ def get_borrowers_endpoint(status_filter: Optional[str] = None):
 
 @app.get(
     "/api/v1/borrowers/{borrower_id}",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["Borrowers"]
 )
@@ -244,11 +238,8 @@ def get_borrower_detail_endpoint(borrower_id: str):
 
     sig_input = SignalInput(**target["signals"])
     score_out = calculate_trust_score(sig_input)
-    ml_pred = predict_credit_risk(sig_input, score_out)
-    score_out.probability_of_default = ml_pred.probability_of_default
-    score_out.ml_risk_band = ml_pred.risk_band
-    score_out.shap_feature_contributions = ml_pred.shap_contributions
-    score_out.ml_model_details = ml_pred
+    score_out = calculate_score_endpoint(sig_input)
+    ml_pred = score_out.ml_model_details
 
     attributions = generate_feature_attributions(sig_input, score_out)
     counterfactuals = generate_counterfactual_paths(sig_input, score_out.composite_score)
@@ -264,6 +255,7 @@ def get_borrower_detail_endpoint(borrower_id: str):
 
 @app.get(
     "/api/v1/borrowers/{borrower_id}/behavior",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["Risk Intelligence"]
 )
@@ -286,6 +278,7 @@ def get_borrower_behavior_endpoint(borrower_id: str):
 
 @app.get(
     "/api/v1/borrowers/{borrower_id}/risk",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["Risk Intelligence"]
 )
@@ -314,6 +307,7 @@ def get_borrower_risk_endpoint(borrower_id: str):
 
 @app.post(
     "/api/v1/simulate",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     response_model=SimulationResponse,
     status_code=status.HTTP_200_OK,
     tags=["What-If Simulation"]
@@ -335,55 +329,14 @@ def simulate_scenario_endpoint(payload: SimulationRequest) -> SimulationResponse
 
 @app.post(
     "/api/v1/documents/check",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     response_model=DocumentCheckResponse,
     status_code=status.HTTP_200_OK,
     tags=["Document Verification"]
 )
 def check_document_anomaly_endpoint(doc: DocumentCheckRequest) -> DocumentCheckResponse:
-    """Screen uploaded financial evidence for anomalies, duplicate references, and inconsistencies."""
-    flags: List[str] = []
-    anomaly_score = 4
-    trust_score = 96
-    status_result = "VERIFIED"
-
-    doc_name_lower = doc.document_name.lower()
-    
-    # Check for duplicate invoice flag
-    if doc.invoice_number and "4091" in doc.invoice_number:
-        flags.append("Duplicate invoice number #INV-4091 detected across another applicant record.")
-        anomaly_score += 55
-        trust_score -= 40
-        status_result = "REVIEW_REQUIRED"
-
-    # Check for amount spike anomaly
-    if doc.amount and doc.amount > 50000.0:
-        flags.append(f"Invoice amount ₹{doc.amount:,.0f} exceeds typical micro-merchant threshold.")
-        anomaly_score += 25
-        trust_score -= 15
-        if status_result == "VERIFIED":
-            status_result = "REVIEW_REQUIRED"
-
-    # Check for date keyword or test cases
-    if "mismatch" in doc_name_lower:
-        flags.append("Document issue date precedes business registration date.")
-        anomaly_score += 35
-        trust_score -= 25
-        status_result = "REVIEW_REQUIRED"
-
-    return DocumentCheckResponse(
-        document_name=doc.document_name,
-        verification_status=status_result,
-        ocr_extracted=True,
-        date_consistency_pass=("mismatch" not in doc_name_lower),
-        amount_consistency_pass=(doc.amount is None or doc.amount <= 50000.0),
-        duplicate_check_pass=(not any("Duplicate" in f for f in flags)),
-        business_info_pass=True,
-        transaction_consistency_pass=True,
-        document_trust_score=max(0, trust_score),
-        anomaly_score=min(100, anomaly_score),
-        anomaly_flags=flags,
-        screening_mode="Anomaly screening — prototype"
-    )
+    """Accept metadata for manual review without inventing verification results."""
+    return DocumentCheckResponse(document_name=doc.document_name)
 
 
 # ============================================================
@@ -392,6 +345,7 @@ def check_document_anomaly_endpoint(doc: DocumentCheckRequest) -> DocumentCheckR
 
 @app.get(
     "/api/v1/portfolio",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     response_model=PortfolioAnalyticsResponse,
     status_code=status.HTTP_200_OK,
     tags=["Portfolio Analytics"]
@@ -444,7 +398,7 @@ def get_fairness_audit_endpoint():
     return FairnessMetricsResponse(
         disparate_impact_ratio=0.94,
         four_fifths_threshold=0.80,
-        compliance_status="COMPLIANT (DIR >= 0.80)",
+        compliance_status="SYNTHETIC_DEMONSTRATION_NOT_VALIDATED",
         approval_rate_difference=0.024,
         false_positive_rate_difference=0.018,
         false_negative_rate_difference=0.022,
@@ -477,10 +431,11 @@ def get_fairness_audit_endpoint():
 
 @app.get(
     "/api/v1/audit",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     status_code=status.HTTP_200_OK,
     tags=["Audit & Governance"]
 )
-def get_audit_trail_endpoint(limit: int = 50):
+def get_audit_trail_endpoint(limit: int = Query(50, ge=1, le=200)):
     """Retrieve immutable audit events for underwriter actions."""
     return {
         "count": len(AUDIT_LOG_STORE),
@@ -490,16 +445,18 @@ def get_audit_trail_endpoint(limit: int = 50):
 
 @app.post(
     "/api/v1/audit",
+    dependencies=[Depends(require_role([UserRole.UNDERWRITER, UserRole.ADMIN]))],
     response_model=AuditEventItem,
     status_code=status.HTTP_201_CREATED,
     tags=["Audit & Governance"]
 )
-def record_audit_event_endpoint(event: AuditEventCreate):
+def record_audit_event_endpoint(event: AuditEventCreate, user: UserProfile = Depends(get_current_user)):
     """Record an underwriter decision or system simulation into the audit trail."""
     new_item = {
         "id": f"audit-{uuid.uuid4().hex[:8]}",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "actor": event.underwriter_id,
+        "actor": user.user_id,
+        "underwriter_id": user.user_id,
         "action": event.action,
         "applicant_id": event.applicant_id,
         "applicant_name": event.applicant_name,
@@ -556,7 +513,7 @@ def get_current_profile_endpoint(user: UserProfile = Depends(get_current_user)) 
 )
 def get_security_status_endpoint():
     """Retrieve active security controls, RLS status, and cryptographic protections."""
-    return SecurityStatusResponse()
+    return SecurityStatusResponse(rls_enforced=False, audit_logging="In-memory prototype; resets on restart")
 
 
 # ============================================================
@@ -609,7 +566,8 @@ async def upload_document_endpoint(
     - Sanitizes filename to prevent directory traversal
     - Computes cryptographic SHA-256 fingerprint
     """
-    content = await file.read()
+    content = await file.read(MAX_FILE_SIZE_BYTES + 1)
+    await file.close()
     result = process_secure_upload(content, file.filename or "evidence.pdf", category)
     if not result["allowed"]:
         raise HTTPException(

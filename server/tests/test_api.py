@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 from app.main import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"Authorization": "Bearer demo-underwriter-token"})
 
 
 def test_health_check_endpoint():
@@ -167,7 +167,7 @@ def test_audit_trail_api():
 
 
 def test_document_anomaly_check_api():
-    """Verify prototype document anomaly screening detects duplicate invoice reference."""
+    """Metadata alone must not claim OCR, duplicate detection or authenticity."""
     payload = {
         "document_name": "APMC Vendor Slip",
         "document_type": "SUPPLIER_INVOICE",
@@ -177,9 +177,11 @@ def test_document_anomaly_check_api():
     response = client.post("/api/v1/documents/check", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["duplicate_check_pass"] is False
-    assert data["verification_status"] == "REVIEW_REQUIRED"
-    assert any("Duplicate" in f for f in data["anomaly_flags"])
+    assert data["duplicate_check_pass"] is None
+    assert data["verification_status"] == "PENDING"
+    assert data["ocr_extracted"] is False
+    assert data["document_trust_score"] is None
+    assert data["anomaly_flags"] == []
 
 
 def test_research_matrix_api():

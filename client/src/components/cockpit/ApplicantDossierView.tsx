@@ -12,6 +12,8 @@ import {
   Camera
 } from 'lucide-react';
 import type { Applicant, ReviewStatus } from '../../types/underwriter';
+import TrustScoreBentoCard from './TrustScoreBentoCard';
+import TrustScoreOrbits from './TrustScoreOrbits';
 
 interface ApplicantDossierViewProps {
   applicant: Applicant;
@@ -34,12 +36,17 @@ export default function ApplicantDossierView({
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
 
   const suggestedMin = applicant.suggestedLendingMin || Math.round(applicant.requestedAmount * 0.8);
-  const suggestedMax = applicant.suggestedLendingMax || Math.round(applicant.requestedAmount * 1.2);
+  const suggestedMax = applicant.suggestedLendingMax || applicant.requestedAmount;
 
   const handleDecision = async (status: ReviewStatus) => {
     setIsSubmitting(true);
-    await onUnderwriterDecision(applicant.id, status, decisionNotes, customSanctionAmount);
-    setIsSubmitting(false);
+    try {
+      await onUnderwriterDecision(applicant.id, status, decisionNotes, customSanctionAmount);
+    } catch {
+      return; // Parent displays the persistence error.
+    } finally {
+      setIsSubmitting(false);
+    }
 
     let msg = '';
     if (status === 'APPROVED') msg = `Successfully sanctioned ₹${customSanctionAmount.toLocaleString()} starter loan.`;
@@ -106,6 +113,26 @@ export default function ApplicantDossierView({
           <span>{actionSuccessMessage}</span>
         </div>
       )}
+
+      {/* Interactive Bento-Style Trust Score & 3-Pillar Breakdown with Harmonic Orbits Widget */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        <div className="lg:col-span-8">
+          <TrustScoreBentoCard applicant={applicant} />
+        </div>
+        <div className="lg:col-span-4">
+          <TrustScoreOrbits
+            applicant={applicant}
+            score={applicant.trustScore}
+            abilityScore={applicant.pillars.ability}
+            willingnessScore={applicant.pillars.willingness}
+            stabilityScore={applicant.pillars.stability}
+            confidenceTier={applicant.confidenceTier}
+            riskTier={applicant.riskTier}
+            compact={true}
+            className="w-full h-[280px]"
+          />
+        </div>
+      </div>
 
       {/* PART 12: LOAN RECOMMENDATION BAND */}
       <div className="p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950/20 to-slate-900 border border-indigo-500/30 shadow-lg space-y-4">
@@ -234,6 +261,15 @@ export default function ApplicantDossierView({
           </p>
         </div>
       </div>
+
+      {/* High-End ThreeUI-Style React Orbits Motion Design Component */}
+      <TrustScoreOrbits
+        applicant={applicant}
+        score={applicant.trustScore}
+        abilityScore={applicant.pillars.ability}
+        willingnessScore={applicant.pillars.willingness}
+        stabilityScore={applicant.pillars.stability}
+      />
 
       {/* 3 Pillars & Signals Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">

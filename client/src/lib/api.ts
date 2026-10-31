@@ -1,4 +1,6 @@
-import { supabase } from './supabaseClient';
+import { supabase, isSupabaseConfigured } from './supabaseClient';
+import { authHeaders, getDemoRole } from './auth';
+import { roundHalfEven } from './scoring';
 import type { Applicant, ReviewStatus, FeatureAttributionItem } from '../types/underwriter';
 import { SEED_APPLICANTS } from '../data/seedApplicants';
 
@@ -51,7 +53,7 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
 
     const response = await fetch(`${API_BASE_URL}/api/v1/score/calculate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await authHeaders() },
       body: JSON.stringify(signals),
       signal: controller.signal
     });
@@ -59,19 +61,21 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
 
     if (response.ok) {
       const data = await response.json();
-      return data as ScoreOutput;
+      return { ...data, shap_feature_contributions: data.shap_feature_contributions?.map(
+        (item: FeatureAttributionItem & { raw_metric?: string }) => ({ ...item, rawMetric: item.raw_metric ?? item.rawMetric })
+      ) } as ScoreOutput;
     }
   } catch {
     // FastAPI server offline or connection timed out — fallback to identical deterministic formula
   }
 
   // Deterministic Mathematical Scoring Fallback (Formula from SPEC.md)
-  const ability = Math.min(100, Math.max(0, Math.round((signals.weekly_income / 1000.0) * 11)));
+  const ability = Math.min(100, Math.max(0, roundHalfEven((signals.weekly_income / 1000.0) * 11)));
   const willingness = Math.min(
     100,
     Math.max(
       0,
-      Math.round(
+      roundHalfEven(
         0.50 * signals.stall_rent_timeliness +
         0.30 * signals.supplier_repayment_pct +
         0.20 * signals.utility_recharge_pct
@@ -80,11 +84,11 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
   );
   const stability = Math.min(
     100,
-    Math.max(0, Math.round((signals.stall_tenure_months / 24.0) * 100))
+    Math.max(0, roundHalfEven((signals.stall_tenure_months / 24.0) * 100))
   );
 
   const rawComposite = (0.40 * ability) + (0.35 * willingness) + (0.25 * stability);
-  const composite = Math.min(100, Math.max(0, Math.round(rawComposite)));
+  const composite = Math.min(100, Math.max(0, roundHalfEven(rawComposite)));
 
   const tier =
     composite >= 80
@@ -135,9 +139,6 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
     what_needs_attention.push('No verified participation in community savings (SHG / Chit fund); missing social collateral signal.');
   }
 
-  // Calibrated ML Default Probability fallback
-  const approxPd = Math.max(0.01, Math.min(0.95, Number(((100 - composite) / 120.0).toFixed(4))));
-  const mlRiskBand = approxPd < 0.05 ? 'VERY_LOW_RISK' : approxPd < 0.12 ? 'LOW_RISK' : approxPd < 0.25 ? 'MODERATE_RISK' : 'HIGH_RISK';
 
   return {
     composite_score: composite,
@@ -149,14 +150,7 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
     what_needs_attention,
     weekly_installment: weeklyInstallment,
     debt_service_coverage: Number(coverage.toFixed(2)),
-    probability_of_default: approxPd,
-    ml_risk_band: mlRiskBand,
-    shap_feature_contributions: [
-      { feature: 'Gross Weekly Turnover', contribution: Number(((ability - 50) * 0.35).toFixed(1)), direction: ability >= 50 ? 'NEGATIVE' : 'POSITIVE', rawMetric: `₹${signals.weekly_income.toLocaleString()} / wk`, category: 'Ability' },
-      { feature: 'Wholesale Supplier Repayment', contribution: Number(((signals.supplier_repayment_pct - 80) * 0.4).toFixed(1)), direction: signals.supplier_repayment_pct >= 80 ? 'NEGATIVE' : 'POSITIVE', rawMetric: `${signals.supplier_repayment_pct.toFixed(0)}% promptness`, category: 'Willingness' },
-      { feature: 'Stall Operating Longevity', contribution: Number(((signals.stall_tenure_months - 12) * 0.5).toFixed(1)), direction: signals.stall_tenure_months >= 12 ? 'NEGATIVE' : 'POSITIVE', rawMetric: `${signals.stall_tenure_months} continuous months`, category: 'Stability' },
-      { feature: 'Stall Rent Consistency', contribution: Number(((signals.stall_rent_timeliness - 85) * 0.3).toFixed(1)), direction: signals.stall_rent_timeliness >= 85 ? 'NEGATIVE' : 'POSITIVE', rawMetric: `${signals.stall_rent_timeliness.toFixed(0)}% timeliness`, category: 'Willingness' }
-    ]
+
   };
 }
 
@@ -164,186 +158,57 @@ export async function calculateScoreApi(signals: SignalInput): Promise<ScoreOutp
 // 2. SUPABASE UNDERWRITER QUEUE FETCHER
 // ============================================================
 export async function getUnderwriterQueueApi(): Promise<Applicant[]> {
-  try {
-    // 1. Fetch live records from Supabase
-    const { data: borrowers, error: bErr } = await supabase
-      .from('borrowers')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (!bErr && borrowers && borrowers.length > 0) {
-      const borrowerIds = borrowers.map(b => b.id);
-
-      const [scoresRes, appsRes, signalsRes] = await Promise.all([
-        supabase.from('trust_scores').select('*').in('borrower_id', borrowerIds),
-        supabase.from('loan_applications').select('*').in('borrower_id', borrowerIds),
-        supabase.from('signals').select('*').in('borrower_id', borrowerIds)
-      ]);
-
-      const scoresMap = new Map(scoresRes.data?.map(s => [s.borrower_id, s]));
-      const appsMap = new Map(appsRes.data?.map(a => [a.borrower_id, a]));
-      const signalsMap = new Map(signalsRes.data?.map(sg => [sg.borrower_id, sg]));
-
-      const dbApplicants: Applicant[] = borrowers.map((b) => {
-        const scoreRec = scoresMap.get(b.id);
-        const appRec = appsMap.get(b.id);
-        const sigRec = signalsMap.get(b.id);
-
-        const composite = scoreRec?.composite_score ?? 78;
-        const ability = scoreRec?.ability_score ?? 82;
-        const willingness = scoreRec?.willingness_score ?? 85;
-        const stability = scoreRec?.stability_score ?? 65;
-
-        // Map status enum
-        let status: ReviewStatus = 'PENDING_REVIEW';
-        if (appRec?.status === 'APPROVED') status = 'APPROVED';
-        else if (appRec?.status === 'MORE_INFO_REQUESTED') status = 'NEEDS_INFO';
-        else if (appRec?.status === 'PAUSED') status = 'PAUSED';
-
-        return {
-          id: appRec?.id ? `TB-${appRec.id.slice(0, 8).toUpperCase()}` : `TB-2026-${b.id.slice(0, 4).toUpperCase()}`,
-          name: b.full_name,
-          businessType: b.business_type,
-          location: b.location,
-          stallTenureMonths: b.stall_tenure_months,
-          weeklyRevenue: Number(b.weekly_income),
-          requestedAmount: Number(appRec?.requested_amount || 10000),
-          repaymentWeeks: 12,
-          trustScore: composite,
-          confidenceTier: scoreRec?.confidence_tier || (composite >= 70 ? 'Medium-High Confidence' : 'Review Required'),
-          pillars: { ability, willingness, stability },
-          signals: [
-            {
-              name: 'Weekly Business Turnover',
-              rawMetric: `₹${Number(b.weekly_income).toLocaleString()} / week`,
-              pillar: 'Ability (40%)',
-              contribution: 33,
-              status: 'VERIFIED',
-              insight: 'Consistent digital QR and ledger turnover.'
-            },
-            {
-              name: 'Stall Rent Payments',
-              rawMetric: `${sigRec?.stall_rent_timeliness ?? 95}% On-Time`,
-              pillar: 'Willingness (35%)',
-              contribution: 15,
-              status: 'VERIFIED',
-              insight: 'Continuous rental receipts from premises landlord.'
-            },
-            {
-              name: 'Supplier Repayment History',
-              rawMetric: `${sigRec?.supplier_repayment_pct ?? 90}% Timely`,
-              pillar: 'Willingness (35%)',
-              contribution: 9,
-              status: 'VERIFIED',
-              insight: 'Wholesale mandi and raw vendor clearance records.'
-            },
-            {
-              name: 'Utility & Mobile Recharges',
-              rawMetric: `${sigRec?.utility_recharge_pct ?? 85}% Regular`,
-              pillar: 'Willingness (35%)',
-              contribution: 6,
-              status: 'VERIFIED',
-              insight: 'Commercial electricity meter and active business SIM transactions.'
-            },
-            {
-              name: 'Community Chit Participation',
-              rawMetric: sigRec?.chit_shg_active ? 'Active Contributor' : 'Non-Participant',
-              pillar: 'Stability (25%)',
-              contribution: sigRec?.chit_shg_active ? 5 : 0,
-              status: 'VERIFIED',
-              insight: 'Social collateral backed by neighborhood peer lending association.'
-            },
-            {
-              name: 'Business Continuity (Tenure)',
-              rawMetric: `${b.stall_tenure_months} Months`,
-              pillar: 'Stability (25%)',
-              contribution: Math.min(10, Math.round((b.stall_tenure_months / 24) * 10)),
-              status: 'VERIFIED',
-              insight: 'Continuous operational footprint at current physical location.'
-            }
-          ],
-          proofDocuments: [
-            {
-              id: `doc-${b.id}-1`,
-              name: 'Stall Rent Agreement / Receipts',
-              category: 'Rent',
-              status: 'VERIFIED',
-              issuedBy: 'Stall Landlord / Market Committee',
-              verifiedAt: new Date(b.created_at).toLocaleDateString(),
-              summary: 'Documented on-time rent payment slips.'
-            },
-            {
-              id: `doc-${b.id}-2`,
-              name: 'UPI QR Daily Settlement Log',
-              category: 'Utility',
-              status: 'VERIFIED',
-              issuedBy: 'NPCI / Merchant QR Gateway',
-              verifiedAt: new Date(b.created_at).toLocaleDateString(),
-              summary: 'Verified daily UPI merchant QR settlement transaction ledger.'
-            },
-            {
-              id: `doc-${b.id}-3`,
-              name: 'Wholesale Mandi Invoice',
-              category: 'Supplier',
-              status: 'VERIFIED',
-              issuedBy: 'APMC Wholesale Yard',
-              verifiedAt: new Date(b.created_at).toLocaleDateString(),
-              summary: 'Commercial wholesale supplier invoices settled punctually.'
-            },
-            {
-              id: `doc-${b.id}-4`,
-              name: 'Electricity / Mobile Recharge Slips',
-              category: 'Utility',
-              status: 'VERIFIED',
-              issuedBy: 'Utility Provider',
-              verifiedAt: new Date(b.created_at).toLocaleDateString(),
-              summary: '6 months electronic transaction slips.'
-            },
-            {
-              id: `doc-${b.id}-5`,
-              name: 'Business Kiosk Geo-Photo',
-              category: 'Business Photo',
-              status: 'VERIFIED',
-              issuedBy: 'Field Verification Officer',
-              verifiedAt: new Date(b.created_at).toLocaleDateString(),
-              summary: 'Verified physical retail kiosk location.'
-            }
-          ],
-          verificationRatio: '5/5 Verified',
-          status,
-          appliedDate: new Date(b.created_at).toLocaleDateString(),
-          aiExplanation: {
-            summary: `${b.full_name} displays reliable willingness and operational discipline. Weekly turnover of ₹${Number(b.weekly_income).toLocaleString()} provides sufficient coverage over the requested loan installment. 18+ months continuity indicates low business mortality.`,
-            strengths: scoreRec?.what_helped || [
-              `${b.stall_tenure_months} months continuous business tenure at same stall location.`,
-              'Strong wholesale supplier and stall rent repayment punctuality.'
-            ],
-            riskFactors: scoreRec?.what_needs_attention || [
-              'Seasonal cashflow buffer recommended.'
-            ],
-            underwritingRecommendation: `Recommend sanction of ₹${Number(appRec?.requested_amount || 10000).toLocaleString()} starter loan.`
-          }
-        };
-      });
-
-      // Merge database records with session additions and curated benchmarks
-      const combined = [...sessionApplicants, ...dbApplicants];
-      const seenIds = new Set(combined.map(a => a.name));
-      const filteredSeed = SEED_APPLICANTS.filter(s => !seenIds.has(s.name));
-      return [...combined, ...filteredSeed];
-    }
-  } catch (err) {
-    console.warn('[TrustBridge] Error querying Supabase; using local seed queue:', err);
+  if (getDemoRole()) return [...sessionApplicants, ...SEED_APPLICANTS];
+  if (!isSupabaseConfigured) throw new Error('Configure Supabase or sign in to the demo workspace.');
+  const [borrowersRes, scoresRes, appsRes, signalsRes] = await Promise.all([
+    supabase.from('borrowers').select('*'),
+    supabase.from('trust_scores').select('*').order('created_at', { ascending: true }),
+    supabase.from('loan_applications').select('*').order('created_at', { ascending: false }),
+    supabase.from('signals').select('*').order('created_at', { ascending: true })
+  ]);
+  for (const result of [borrowersRes, scoresRes, appsRes, signalsRes]) {
+    if (result.error) throw new Error(result.error.message);
   }
-
-  // Fallback: Combine session applicants with benchmark seed applicants
-  return [...sessionApplicants, ...SEED_APPLICANTS];
+  const borrowers = new Map(borrowersRes.data?.map(b => [b.id, b]));
+  const scores = new Map(scoresRes.data?.map(b => [b.borrower_id, b]));
+  const signals = new Map(signalsRes.data?.map(b => [b.borrower_id, b]));
+  return (appsRes.data || []).map(app => {
+    const borrower = borrowers.get(app.borrower_id);
+    const score = scores.get(app.borrower_id);
+    const signal = signals.get(app.borrower_id);
+    if (!borrower || !score || !signal) throw new Error('Application records are incomplete. Review the database before making a decision.');
+    const composite = score.composite_score;
+    return {
+      id: app.id, name: borrower.full_name, businessType: borrower.business_type,
+      location: borrower.location, stallTenureMonths: borrower.stall_tenure_months,
+      weeklyRevenue: Number(borrower.weekly_income), requestedAmount: Number(app.requested_amount),
+      repaymentWeeks: app.repayment_weeks ?? 12, trustScore: composite,
+      confidenceTier: score.confidence_tier,
+      pillars: { ability: score.ability_score, willingness: score.willingness_score, stability: score.stability_score },
+      signals: [
+        { name: 'Weekly Business Turnover', rawMetric: `₹${borrower.weekly_income} / week`, pillar: 'Ability (40%)', contribution: score.ability_score * 0.4, status: 'SELF_REPORTED', insight: 'Borrower supplied; evidence pending.' },
+        { name: 'Stall Rent Payments', rawMetric: `${signal.stall_rent_timeliness}% On-Time`, pillar: 'Willingness (35%)', contribution: signal.stall_rent_timeliness * 0.5 * 0.35, status: 'SELF_REPORTED', insight: 'Borrower supplied; evidence pending.' },
+        { name: 'Supplier Repayment History', rawMetric: `${signal.supplier_repayment_pct}% Timely`, pillar: 'Willingness (35%)', contribution: signal.supplier_repayment_pct * 0.3 * 0.35, status: 'SELF_REPORTED', insight: 'Borrower supplied; evidence pending.' },
+        { name: 'Utility & Mobile Recharges', rawMetric: `${signal.utility_recharge_pct}% Regular`, pillar: 'Willingness (35%)', contribution: signal.utility_recharge_pct * 0.2 * 0.35, status: 'SELF_REPORTED', insight: 'Borrower supplied; evidence pending.' },
+        { name: 'Business Continuity (Tenure)', rawMetric: `${borrower.stall_tenure_months} Months`, pillar: 'Stability (25%)', contribution: score.stability_score * 0.25, status: 'SELF_REPORTED', insight: 'Borrower supplied; evidence pending.' }
+      ],
+      proofDocuments: [], verificationRatio: 'No verified evidence',
+      status: app.status === 'MORE_INFO_REQUESTED' ? 'NEEDS_INFO' : app.status,
+      appliedDate: new Date(app.created_at).toLocaleDateString(),
+      riskTier: composite >= 75 ? 'LOW' : composite >= 60 ? 'MODERATE' : 'HIGH',
+      sanctionNotes: app.underwriter_notes,
+      aiExplanation: { summary: 'Assessment of self-reported signals; manual evidence review required.',
+        strengths: score.what_helped || [], riskFactors: score.what_needs_attention || [],
+        underwritingRecommendation: 'Review verified evidence and affordability before recording a lending decision.' }
+    } as Applicant;
+  });
 }
 
 // ============================================================
 // 3. SUBMIT NEW BORROWER APPLICATION TO SUPABASE
 // ============================================================
 export interface ApplicationSubmissionPayload {
+  explicitConsentGiven: boolean;
   fullName: string;
   businessType: string;
   location: string;
@@ -360,6 +225,10 @@ export interface ApplicationSubmissionPayload {
 export async function submitApplicationApi(
   payload: ApplicationSubmissionPayload
 ): Promise<{ success: boolean; id: string; applicant?: Applicant; error?: string }> {
+  if (!payload.explicitConsentGiven) throw new Error('Explicit consent is required before submission.');
+  if ([payload.fullName, payload.businessType, payload.location].some(value => value.trim().length < 2)) {
+    throw new Error('Enter a name, business type, and location with at least two characters.');
+  }
   // 1. Calculate deterministic score
   const scoreResult = await calculateScoreApi({
     stall_tenure_months: payload.stallTenureMonths,
@@ -396,212 +265,100 @@ export async function submitApplicationApi(
         name: 'Weekly Business Turnover',
         rawMetric: `₹${payload.weeklyIncome.toLocaleString()} / week`,
         pillar: 'Ability (40%)',
-        contribution: 33,
-        status: 'VERIFIED',
-        insight: 'Self-reported and verified against daily UPI statements.'
+        contribution: scoreResult.ability_score * 0.4,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       },
       {
         name: 'Stall Rent Payments',
         rawMetric: `${payload.stallRentTimeliness}% On-Time`,
         pillar: 'Willingness (35%)',
-        contribution: 15,
-        status: 'VERIFIED',
-        insight: 'Verified rental slips from stall landlord.'
+        contribution: payload.stallRentTimeliness * 0.5 * 0.35,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       },
       {
         name: 'Supplier Repayment History',
         rawMetric: `${payload.supplierRepaymentPct}% Timely`,
         pillar: 'Willingness (35%)',
-        contribution: 9,
-        status: 'VERIFIED',
-        insight: 'Commercial wholesale supplier invoices settled punctually.'
+        contribution: payload.supplierRepaymentPct * 0.3 * 0.35,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       },
       {
         name: 'Utility & Mobile Recharges',
         rawMetric: `${payload.utilityRechargePct}% Regular`,
         pillar: 'Willingness (35%)',
-        contribution: 6,
-        status: 'VERIFIED',
-        insight: 'Continuous telecom and commercial utility transaction history.'
+        contribution: payload.utilityRechargePct * 0.2 * 0.35,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       },
       {
         name: 'Community Chit Participation',
         rawMetric: payload.chitShgActive ? 'Active Contributor' : 'Non-Participant',
         pillar: 'Stability (25%)',
-        contribution: payload.chitShgActive ? 5 : 0,
-        status: 'VERIFIED',
-        insight: 'Verified participation in community mutual-aid savings pool.'
+        contribution: 0,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       },
       {
         name: 'Business Continuity (Tenure)',
         rawMetric: `${payload.stallTenureMonths} Months`,
         pillar: 'Stability (25%)',
-        contribution: Math.min(10, Math.round((payload.stallTenureMonths / 24) * 10)),
-        status: 'VERIFIED',
-        insight: 'Physical stall longevity at declared market corner.'
+        contribution: scoreResult.stability_score * 0.25,
+        status: 'SELF_REPORTED',
+        insight: 'Self-reported; supporting evidence requires manual review.'
       }
     ],
-    proofDocuments: [
-      {
-        id: `doc-sub-1`,
-        name: 'Stall Lease Receipt',
-        category: 'Rent',
-        status: 'VERIFIED',
-        issuedBy: 'Premises Landlord',
-        verifiedAt: new Date().toLocaleTimeString(),
-        summary: 'Submitted rental receipts demonstrating on-time rent payment.'
-      },
-      {
-        id: `doc-sub-2`,
-        name: 'UPI QR Settlement Log',
-        category: 'Utility',
-        status: 'VERIFIED',
-        issuedBy: 'Merchant UPI Gateway',
-        verifiedAt: new Date().toLocaleTimeString(),
-        summary: 'Daily QR transaction records verified with payment aggregator.'
-      },
-      {
-        id: `doc-sub-3`,
-        name: 'Wholesale Invoice Slip',
-        category: 'Supplier',
-        status: 'VERIFIED',
-        issuedBy: 'Wholesale Mandi Merchant',
-        verifiedAt: new Date().toLocaleTimeString(),
-        summary: 'Inventory procurement slips verified by underwriter.'
-      },
-      {
-        id: `doc-sub-4`,
-        name: 'Utility Recharge Record',
-        category: 'Utility',
-        status: 'VERIFIED',
-        issuedBy: 'Telecom & Electricity Operator',
-        verifiedAt: new Date().toLocaleTimeString(),
-        summary: 'Consistent utility payments.'
-      },
-      {
-        id: `doc-sub-5`,
-        name: 'Stall Verification Photo',
-        category: 'Business Photo',
-        status: 'VERIFIED',
-        issuedBy: 'TrustBridge Field Hub',
-        verifiedAt: new Date().toLocaleTimeString(),
-        summary: 'Geo-tagged photograph of physical kiosk.'
-      }
-    ],
-    verificationRatio: '5/5 Verified',
+    proofDocuments: [],
+    verificationRatio: 'No verified evidence',
     status: 'PENDING_REVIEW',
+    riskTier: scoreResult.composite_score >= 75 ? 'LOW' : scoreResult.composite_score >= 60 ? 'MODERATE' : 'HIGH',
     appliedDate: new Date().toLocaleDateString(),
     aiExplanation: {
-      summary: `${payload.fullName} has submitted verified business telemetry showing a Trust Score of ${scoreResult.composite_score}/100. Weekly revenue of ₹${payload.weeklyIncome.toLocaleString()} supports the requested ₹${payload.requestedAmount.toLocaleString()} starter capital.`,
+      summary: `${payload.fullName} has submitted self-reported business signals showing a Trust Score of ${scoreResult.composite_score}/100. Weekly revenue of ₹${payload.weeklyIncome.toLocaleString()} supports the requested ₹${payload.requestedAmount.toLocaleString()} starter capital.`,
       strengths: scoreResult.what_helped,
       riskFactors: scoreResult.what_needs_attention,
       underwritingRecommendation: `Recommended for human underwriter review with a starter sanction of ₹${payload.requestedAmount.toLocaleString()}.`
     }
   };
 
-  // 2. Try inserting into Supabase PostgreSQL
-  try {
-    const { data: bData, error: bErr } = await supabase
-      .from('borrowers')
-      .insert({
-        full_name: payload.fullName,
-        business_type: payload.businessType,
-        location: payload.location,
-        stall_tenure_months: payload.stallTenureMonths,
-        weekly_income: payload.weeklyIncome
-      })
-      .select()
-      .single();
-
-    if (bData && !bErr) {
-      await Promise.all([
-        supabase.from('signals').insert({
-          borrower_id: bData.id,
-          stall_rent_timeliness: payload.stallRentTimeliness,
-          supplier_repayment_pct: payload.supplierRepaymentPct,
-          utility_recharge_pct: payload.utilityRechargePct,
-          chit_shg_active: payload.chitShgActive
-        }),
-        supabase.from('trust_scores').insert({
-          borrower_id: bData.id,
-          composite_score: scoreResult.composite_score,
-          ability_score: scoreResult.ability_score,
-          willingness_score: scoreResult.willingness_score,
-          stability_score: scoreResult.stability_score,
-          confidence_tier: scoreResult.confidence_tier,
-          what_helped: scoreResult.what_helped,
-          what_needs_attention: scoreResult.what_needs_attention
-        }),
-        supabase.from('loan_applications').insert({
-          borrower_id: bData.id,
-          requested_amount: payload.requestedAmount,
-          status: 'PENDING_REVIEW',
-          underwriter_notes: 'Submitted via TrustBridge online simulator with affirmative borrower consent.'
-        }),
-        supabase.from('consents').insert({
-          borrower_id: bData.id,
-          purpose: 'Alternative creditworthiness assessment',
-          consent_version: 'v2.1',
-          data_categories: ['business_info', 'income_turnover', 'payment_behavior', 'uploaded_evidence'],
-          is_active: true,
-          consented_at: new Date().toISOString()
-        })
-      ]);
-    }
-  } catch (dbErr) {
-    console.warn('[TrustBridge] Supabase write encountered note:', dbErr);
+  if (getDemoRole()) {
+    sessionApplicants.unshift(newApplicant);
+    return { success: true, id: generatedId, applicant: newApplicant };
   }
-
-  // Add to active session queue so it appears immediately in Underwriter Cockpit
-  sessionApplicants.unshift(newApplicant);
-
-  return {
-    success: true,
-    id: generatedId,
-    applicant: newApplicant
-  };
+  if (!isSupabaseConfigured) throw new Error('Sign in to save your application.');
+  // One database transaction: either the complete dossier is saved, or nothing is.
+  const { data, error } = await supabase.rpc('submit_trustbridge_application', { p_payload: payload });
+  if (error) throw new Error(`Application was not saved: ${error.message}`);
+  if (!data?.application_id) throw new Error('The database did not confirm an application reference.');
+  return { success: true, id: data.application_id };
 }
 
-// ============================================================
-// 4. RECORD UNDERWRITER DECISION IN SUPABASE
-// ============================================================
 export async function recordUnderwriterDecisionApi(
   applicationId: string,
   decision: ReviewStatus,
   notes: string = '',
   sanctionedAmount?: number
 ): Promise<{ success: boolean; error?: string }> {
-  try {
-    // Map status enum to database schema
-    let dbStatus = 'PENDING_REVIEW';
-    if (decision === 'APPROVED') dbStatus = 'APPROVED';
-    else if (decision === 'NEEDS_INFO') dbStatus = 'MORE_INFO_REQUESTED';
-    else if (decision === 'PAUSED') dbStatus = 'PAUSED';
-
-    // Attempt to update Supabase loan_applications if UUID is present
-    const cleanId = applicationId.replace(/^TB-/, '');
-    await supabase
-      .from('loan_applications')
-      .update({
-        status: dbStatus,
-        underwriter_notes: notes,
-        sanctioned_amount: sanctionedAmount || null,
-        updated_at: new Date().toISOString()
-      })
-      .ilike('id', `%${cleanId}%`);
-
-    await supabase
-      .from('underwriter_actions')
-      .insert({
-        decision: dbStatus,
-        notes: notes || 'Underwriter recorded decision via Cockpit.',
-        underwriter_id: 'UW-BANGALORE-09'
-      });
-  } catch (err) {
-    console.warn('[TrustBridge] Supabase decision update note:', err);
+  const demoRole = getDemoRole();
+  if (demoRole) {
+    if (demoRole === 'borrower') return { success: false, error: 'Underwriter access is required.' };
+    const local = sessionApplicants.find(a => a.id === applicationId);
+    if (local) { local.status = decision; local.sanctionNotes = notes; }
+    return { success: true };
   }
-
-  return { success: true };
+  try {
+    const dbStatus = decision === 'NEEDS_INFO' ? 'MORE_INFO_REQUESTED' : decision;
+    const { error } = await supabase.rpc('record_trustbridge_decision', {
+      p_application_id: applicationId, p_decision: dbStatus,
+      p_notes: notes, p_amount: sanctionedAmount ?? null
+    });
+    if (error) throw error;
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Decision could not be saved.' };
+  }
 }
 
 // ============================================================
@@ -638,7 +395,7 @@ export async function explainUnderwritingApi(
 
     const response = await fetch(`${API_BASE_URL}/api/v1/explain`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await authHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -696,7 +453,7 @@ export async function simulateScenarioApi(payload: SimulationPayload): Promise<S
 
     const response = await fetch(`${API_BASE_URL}/api/v1/simulate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await authHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal
     });
@@ -779,14 +536,14 @@ export interface DocumentCheckPayload {
 export interface DocumentCheckResult {
   document_name: string;
   verification_status: string;
-  ocr_extracted: boolean;
-  date_consistency_pass: boolean;
-  amount_consistency_pass: boolean;
-  duplicate_check_pass: boolean;
-  business_info_pass: boolean;
-  transaction_consistency_pass: boolean;
-  document_trust_score: number;
-  anomaly_score: number;
+  ocr_extracted: boolean | null;
+  date_consistency_pass: boolean | null;
+  amount_consistency_pass: boolean | null;
+  duplicate_check_pass: boolean | null;
+  business_info_pass: boolean | null;
+  transaction_consistency_pass: boolean | null;
+  document_trust_score: number | null;
+  anomaly_score: number | null;
   anomaly_flags: string[];
   screening_mode: string;
 }
@@ -798,7 +555,7 @@ export async function checkDocumentAnomalyApi(doc: DocumentCheckPayload): Promis
 
     const response = await fetch(`${API_BASE_URL}/api/v1/documents/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await authHeaders() },
       body: JSON.stringify(doc),
       signal: controller.signal
     });
@@ -811,38 +568,19 @@ export async function checkDocumentAnomalyApi(doc: DocumentCheckPayload): Promis
     // Fallback
   }
 
-  const flags: string[] = [];
-  let anomaly = 4;
-  let trust = 96;
-  let status = 'VERIFIED';
-
-  if (doc.invoice_number && doc.invoice_number.includes('4091')) {
-    flags.push('Duplicate invoice number #INV-4091 detected across another applicant record.');
-    anomaly += 55;
-    trust -= 40;
-    status = 'REVIEW_REQUIRED';
-  }
-
-  if (doc.document_name.toLowerCase().includes('mismatch')) {
-    flags.push('Document issue date precedes municipal registration record.');
-    anomaly += 35;
-    trust -= 25;
-    status = 'REVIEW_REQUIRED';
-  }
-
   return {
     document_name: doc.document_name,
-    verification_status: status,
-    ocr_extracted: true,
-    date_consistency_pass: !doc.document_name.toLowerCase().includes('mismatch'),
-    amount_consistency_pass: true,
-    duplicate_check_pass: !flags.some(f => f.includes('Duplicate')),
-    business_info_pass: true,
-    transaction_consistency_pass: true,
-    document_trust_score: Math.max(0, trust),
-    anomaly_score: Math.min(100, anomaly),
-    anomaly_flags: flags,
-    screening_mode: 'Anomaly screening — prototype'
+    verification_status: 'PENDING',
+    ocr_extracted: false,
+    date_consistency_pass: null,
+    amount_consistency_pass: null,
+    duplicate_check_pass: null,
+    business_info_pass: null,
+    transaction_consistency_pass: null,
+    document_trust_score: null,
+    anomaly_score: null,
+    anomaly_flags: [],
+    screening_mode: 'Metadata only. The service is unavailable; manual evidence review is required.'
   };
 }
 
@@ -988,7 +726,7 @@ export async function askAssistantApi(
   try {
     const response = await fetch(`${API_BASE_URL}/api/v1/assistant/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await authHeaders() },
       body: JSON.stringify({
         messages,
         context,
@@ -1007,7 +745,7 @@ export async function askAssistantApi(
   const lastMsg = messages[messages.length - 1]?.content.toLowerCase() || '';
   if (context?.applicant_name) {
     return {
-      reply: `${context.applicant_name}'s deterministic Trust Score is ${context.trust_score || 78}/100 with Ability (${context.pillars?.ability || 82}), Willingness (${context.pillars?.willingness || 85}), and Stability (${context.pillars?.stability || 65}). Behavior trajectory is ${context.risk_trajectory || 'STABLE'}. Human underwriter review is recommended.`,
+      reply: `${context.applicant_name}'s deterministic Trust Score is ${context.trust_score ?? 'not supplied'}/100 with Ability (${context.pillars?.ability ?? 'not supplied'}), Willingness (${context.pillars?.willingness ?? 'not supplied'}), and Stability (${context.pillars?.stability ?? 'not supplied'}). Behavior trajectory is ${context.risk_trajectory ?? 'not supplied'}. Human underwriter review is recommended.`,
       model_used: 'deterministic-client-guardrail',
       suggested_actions: ['Show risk factors', 'What should I verify?', 'How could the score improve?'],
       human_decision_required: true,
@@ -1062,6 +800,7 @@ export async function uploadEvidenceDocumentApi(
 
   const response = await fetch(`${API_BASE_URL}/api/v1/documents/upload`, {
     method: 'POST',
+    headers: await authHeaders(),
     body: formData
   });
 

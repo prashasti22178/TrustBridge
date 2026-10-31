@@ -65,8 +65,8 @@ export default function Sidebar({
   onSelectTab,
   collapsed,
   onToggleCollapse,
-  pendingCount = 142,
-  criticalAlertCount = 2
+  pendingCount = 0,
+  criticalAlertCount = 0
 }: SidebarProps) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -284,6 +284,17 @@ export default function Sidebar({
                   <span>Logout</span>
                 </button>
               </div>
+
+              {/* Minimal FastAPI System Telemetry Footer Badge */}
+              <div className="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-500">
+                <span className="flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  <span>FASTAPI v2.0</span>
+                </span>
+                <span className="text-[9px] uppercase px-1 rounded bg-slate-800 text-slate-400">
+                  DETERMINISTIC
+                </span>
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-2 py-1">
@@ -304,6 +315,10 @@ export default function Sidebar({
               >
                 <LogOut className="h-4 w-4" />
               </button>
+
+              <div className="pt-2 border-t border-slate-800/80 flex justify-center" title="FASTAPI v2.0 • DETERMINISTIC">
+                <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              </div>
             </div>
           )}
         </div>

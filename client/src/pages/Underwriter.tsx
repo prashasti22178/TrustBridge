@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import Sidebar, { type CockpitTab } from '../components/cockpit/Sidebar';
 import CockpitHeader from '../components/cockpit/CockpitHeader';
@@ -8,8 +9,8 @@ import ApplicantDossierView from '../components/cockpit/ApplicantDossierView';
 import RiskIntelligenceView from '../components/cockpit/RiskIntelligenceView';
 import ExplainabilityView from '../components/cockpit/ExplainabilityView';
 import VerificationView from '../components/cockpit/VerificationView';
-import FairnessLabView from '../components/cockpit/FairnessLabView';
 import PortfolioAnalyticsView from '../components/cockpit/PortfolioAnalyticsView';
+import FairnessLabView from '../components/cockpit/FairnessLabView';
 import AuditGovernanceView from '../components/cockpit/AuditGovernanceView';
 import ResearchEvidenceView from '../components/cockpit/ResearchEvidenceView';
 import SettingsView from '../components/cockpit/SettingsView';
@@ -25,10 +26,12 @@ interface UnderwriterProps {
 }
 
 export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
+  const { user } = useAuth();
+  const [decisionError, setDecisionError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTabParam = searchParams.get('tab') as CockpitTab | null;
 
-  const [applicants, setApplicants] = useState<Applicant[]>(SEED_APPLICANTS);
+  const [applicants, setApplicants] = useState<Applicant[]>(user?.isDemo ? SEED_APPLICANTS : []);
   const [activeApplicant, setActiveApplicant] = useState<Applicant>(SEED_APPLICANTS[0]);
   const [activeTab, setActiveTab] = useState<CockpitTab>(defaultTab || initialTabParam || 'dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -40,6 +43,13 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
       setActiveTab(defaultTab);
     }
   }, [defaultTab]);
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab') as CockpitTab | null;
+    if (tabParam && tabParam !== activeTab) {
+      setActiveTab(tabParam);
+    }
+  }, [searchParams, activeTab]);
 
   const [auditLog, setAuditLog] = useState<AuditLogItem[]>([
     {
@@ -88,12 +98,12 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
     if (showSpinner) setIsRefreshing(true);
     try {
       const data = await getUnderwriterQueueApi();
-      if (data && data.length > 0) {
-        setApplicants(data);
+      setApplicants(data);
+      if (data.length > 0) {
         setActiveApplicant((prev) => data.find((a) => a.id === prev.id) || data[0]);
       }
     } catch (err) {
-      console.warn('[TrustBridge] Error querying Supabase queue:', err);
+      setDecisionError(err instanceof Error ? err.message : 'The review queue could not be loaded.');
     } finally {
       setIsRefreshing(false);
     }
@@ -122,7 +132,15 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
       actionLabel = 'Paused Application Processing';
     }
 
-    // Update UI state immediately
+    setDecisionError(null);
+    const result = await recordUnderwriterDecisionApi(applicantId, decision, notes, sanctionedAmount);
+    if (!result.success) {
+      const message = result.error || 'Decision could not be saved. Please retry.';
+      setDecisionError(message);
+      throw new Error(message);
+    }
+
+    // Update the displayed status only after persistence succeeds.
     const updated = applicants.map((a) =>
       a.id === applicantId ? { ...a, status: decision, sanctionNotes: notes } : a
     );
@@ -141,12 +159,9 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
       amount: sanctionedAmount || target.requestedAmount,
       note: notes || 'Underwriter recorded action in FinTech cockpit.',
       timestamp: new Date().toISOString(),
-      underwriterId: 'UW-BANGALORE-09'
+      underwriterId: user?.id || 'demo-underwriter'
     };
     setAuditLog((prev) => [auditItem, ...prev]);
-
-    // Record to backend / Supabase
-    await recordUnderwriterDecisionApi(applicantId, decision, notes, sanctionedAmount);
   };
 
   // Keyboard shortcut Ctrl+B to toggle sidebar
@@ -169,87 +184,109 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
         onSelectTab={handleSelectTab}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        pendingCount={applicants.filter((a) => a.status === 'PENDING_REVIEW').length || 142}
-        criticalAlertCount={applicants.filter((a) => a.riskTrajectory === 'DETERIORATING').length || 2}
+        pendingCount={applicants.filter((a) => a.status === 'PENDING_REVIEW').length}
+        criticalAlertCount={applicants.filter((a) => a.riskTrajectory === 'DETERIORATING').length}
       />
 
       {/* 2. Main Cockpit Body */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Cockpit Top Bar & Multi-Borrower Context Selector */}
-        <CockpitHeader
-          applicants={applicants}
-          activeApplicant={activeApplicant}
-          onSelectApplicant={(appl) => setActiveApplicant(appl)}
-          onRefresh={() => fetchQueue(true)}
-          isRefreshing={isRefreshing}
-          onOpenDossier={() => handleSelectTab('applicants')}
-          onOpenSimulator={() => handleSelectTab('explainability')}
-        />
+        {applicants.length > 0 && (
+          <CockpitHeader
+            applicants={applicants}
+            activeApplicant={activeApplicant}
+            onSelectApplicant={(appl) => setActiveApplicant(appl)}
+            onRefresh={() => fetchQueue(true)}
+            isRefreshing={isRefreshing}
+            onOpenDossier={() => handleSelectTab('applicants')}
+            onOpenSimulator={() => handleSelectTab('explainability')}
+          />
+        )}
 
         {/* Dynamic Module View Content */}
         <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="max-w-7xl mx-auto">
-            {(activeTab === 'dashboard' || activeTab === 'overview') && (
-              <OverviewView
-                applicants={applicants}
-                activeApplicant={activeApplicant}
-                onSelectApplicant={(appl) => setActiveApplicant(appl)}
-                onNavigateToQueue={() => handleSelectTab('queue')}
-                onNavigateToDossier={() => handleSelectTab('applicants')}
-                onNavigateToRisk={() => handleSelectTab('risk-intelligence')}
-              />
+            <p className="mb-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-200">
+              {user?.isDemo
+                ? 'Demo workspace · synthetic examples and session-only changes. No real lending decisions are recorded.'
+                : 'Prototype workspace · supporting evidence requires manual verification. Advanced research views contain labelled fixtures.'}
+            </p>
+            {decisionError && (
+              <p role="alert" className="mb-4 rounded-xl bg-rose-500/10 border border-rose-500/30 p-3 text-sm text-rose-300">
+                {decisionError}
+              </p>
             )}
-
-            {activeTab === 'queue' && (
-              <ReviewQueueView
-                applicants={applicants}
-                activeApplicant={activeApplicant}
-                onSelectApplicant={(appl) => setActiveApplicant(appl)}
-                onOpenDossier={() => handleSelectTab('applicants')}
-              />
+            {applicants.length === 0 && (
+              <div className="p-8 text-center text-slate-300">
+                No applications loaded. <button className="text-indigo-300 underline" onClick={() => fetchQueue(true)}>Retry</button>
+              </div>
             )}
+            {applicants.length > 0 && (
+              <>
+                {(activeTab === 'dashboard' || activeTab === 'overview') && (
+                  <OverviewView
+                    applicants={applicants}
+                    activeApplicant={activeApplicant}
+                    onSelectApplicant={(appl) => setActiveApplicant(appl)}
+                    onNavigateToQueue={() => handleSelectTab('queue')}
+                    onNavigateToDossier={() => handleSelectTab('applicants')}
+                    onNavigateToRisk={() => handleSelectTab('risk-intelligence')}
+                  />
+                )}
 
-            {(activeTab === 'applicants' || activeTab === 'dossier') && (
-              <ApplicantDossierView
-                applicant={activeApplicant}
-                onUnderwriterDecision={handleUnderwriterDecision}
-                onOpenSimulator={() => handleSelectTab('explainability')}
-                onOpenCounterfactuals={() => handleSelectTab('explainability')}
-              />
+                {activeTab === 'queue' && (
+                  <ReviewQueueView
+                    applicants={applicants}
+                    activeApplicant={activeApplicant}
+                    onSelectApplicant={(appl) => setActiveApplicant(appl)}
+                    onOpenDossier={() => handleSelectTab('applicants')}
+                  />
+                )}
+
+                {(activeTab === 'applicants' || activeTab === 'dossier') && (
+                  <ApplicantDossierView
+                    key={activeApplicant.id}
+                    applicant={activeApplicant}
+                    onUnderwriterDecision={handleUnderwriterDecision}
+                    onOpenSimulator={() => handleSelectTab('explainability')}
+                    onOpenCounterfactuals={() => handleSelectTab('explainability')}
+                  />
+                )}
+
+                {(activeTab === 'risk-intelligence' || activeTab === 'behavioral-signals' || activeTab === 'early-warnings') && (
+                  <RiskIntelligenceView
+                    applicant={activeApplicant}
+                    onOpenSimulator={() => handleSelectTab('explainability')}
+                  />
+                )}
+
+                {(activeTab === 'explainability' || activeTab === 'counterfactual' || activeTab === 'simulation') && (
+                  <ExplainabilityView
+                    applicant={activeApplicant}
+                    applicants={applicants}
+                    onSelectApplicant={(appl) => setActiveApplicant(appl)}
+                  />
+                )}
+
+                {(activeTab === 'verification' || activeTab === 'fraud-checks') && (
+                  <VerificationView
+                    applicant={activeApplicant}
+                    applicants={applicants}
+                    onSelectApplicant={(appl) => setActiveApplicant(appl)}
+                  />
+                )}
+
+                {activeTab === 'portfolio' && <PortfolioAnalyticsView />}
+
+                {activeTab === 'fairness' && <FairnessLabView />}
+
+                {activeTab === 'audit' && <AuditGovernanceView auditLog={auditLog} />}
+
+                {activeTab === 'research' && <ResearchEvidenceView />}
+
+                {activeTab === 'settings' && <SettingsView />}
+              </>
             )}
-
-            {(activeTab === 'risk-intelligence' || activeTab === 'behavioral-signals' || activeTab === 'early-warnings') && (
-              <RiskIntelligenceView
-                applicant={activeApplicant}
-                onOpenSimulator={() => handleSelectTab('explainability')}
-              />
-            )}
-
-            {(activeTab === 'explainability' || activeTab === 'counterfactual' || activeTab === 'simulation') && (
-              <ExplainabilityView
-                applicant={activeApplicant}
-                applicants={applicants}
-                onSelectApplicant={(appl) => setActiveApplicant(appl)}
-              />
-            )}
-
-            {(activeTab === 'verification' || activeTab === 'fraud-checks') && (
-              <VerificationView
-                applicant={activeApplicant}
-                applicants={applicants}
-                onSelectApplicant={(appl) => setActiveApplicant(appl)}
-              />
-            )}
-
-            {activeTab === 'portfolio' && <PortfolioAnalyticsView />}
-
-            {activeTab === 'fairness' && <FairnessLabView />}
-
-            {activeTab === 'audit' && <AuditGovernanceView auditLog={auditLog} />}
-
-            {activeTab === 'research' && <ResearchEvidenceView />}
-
-            {activeTab === 'settings' && <SettingsView />}
           </div>
         </main>
       </div>
@@ -264,7 +301,7 @@ export default function Underwriter({ defaultTab }: UnderwriterProps = {}) {
       )}
 
       {/* Contextual AI Underwriting Assistant */}
-      <TrustBridgeAssistant activeApplicant={activeApplicant} />
+      <TrustBridgeAssistant activeApplicant={applicants.length ? activeApplicant : undefined} />
     </div>
   );
 }

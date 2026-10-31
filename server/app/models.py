@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class SignalInput(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
     """Borrower input signals for deterministic alternative credit calculation."""
     stall_tenure_months: int = Field(
         default=18, 
@@ -70,6 +71,8 @@ class MLDefaultPrediction(BaseModel):
     risk_band: str = Field(
         description="Calibrated ML risk band: VERY_LOW_RISK | LOW_RISK | MODERATE_RISK | HIGH_RISK"
     )
+    training_data: str = "synthetic"
+    validation_scope: str = "Educational model; not validated on real borrower outcomes."
     model_version: str = Field(
         default="RandomForest-v1.0",
         description="Version/algorithm of the ML credit risk model"
@@ -122,7 +125,7 @@ class BorrowerCreate(BaseModel):
     location: str = Field(min_length=2, max_length=100)
     signals: SignalInput
     explicit_consent_given: bool = Field(
-        default=True, 
+        default=False,
         description="Affirmative borrower consent is mandatory"
     )
 
@@ -188,19 +191,19 @@ class DocumentCheckRequest(BaseModel):
 
 
 class DocumentCheckResponse(BaseModel):
-    """Automated anomaly screening outcome."""
+    """Metadata intake only; document authenticity has not been established."""
     document_name: str
-    verification_status: str # VERIFIED | PENDING | REVIEW_REQUIRED
-    ocr_extracted: bool = True
-    date_consistency_pass: bool = True
-    amount_consistency_pass: bool = True
-    duplicate_check_pass: bool = True
-    business_info_pass: bool = True
-    transaction_consistency_pass: bool = True
-    document_trust_score: int = Field(ge=0, le=100)
-    anomaly_score: int = Field(ge=0, le=100)
+    verification_status: str = "PENDING"
+    ocr_extracted: bool = False
+    date_consistency_pass: Optional[bool] = None
+    amount_consistency_pass: Optional[bool] = None
+    duplicate_check_pass: Optional[bool] = None
+    business_info_pass: Optional[bool] = None
+    transaction_consistency_pass: Optional[bool] = None
+    document_trust_score: Optional[int] = Field(default=None, ge=0, le=100)
+    anomaly_score: Optional[int] = Field(default=None, ge=0, le=100)
     anomaly_flags: List[str] = Field(default_factory=list)
-    screening_mode: str = "Anomaly screening — prototype"
+    screening_mode: str = "Metadata intake only; OCR, duplicate checks and authenticity verification are not implemented."
 
 
 class AuditEventCreate(BaseModel):

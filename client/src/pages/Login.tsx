@@ -1,3 +1,6 @@
+import { supabase } from '../lib/supabaseClient';
+import { getTrustedRole } from '../lib/auth';
+import { DEMO_ENABLED } from '../lib/auth';
 import React, { useState } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth, type UserRole } from '../context/AuthContext';
@@ -11,7 +14,6 @@ import {
   CheckCircle2,
   Loader2,
   Building2,
-  Briefcase,
   Sliders,
   ShieldAlert,
   Eye,
@@ -28,7 +30,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [fullName, setFullName] = useState('');
-  const [role, setRole] = useState<UserRole>('underwriter');
+  const [role] = useState<UserRole>('borrower');
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -60,7 +62,8 @@ export default function Login() {
 
     if (res.success) {
       // Navigate to destination
-      const destRole = email.toLowerCase().includes('borrower') ? 'borrower' : 'underwriter';
+      const { data } = await supabase.auth.getSession();
+      const destRole = data.session ? getTrustedRole(data.session.user) : 'borrower';
       navigate(getDestination(destRole), { replace: true });
     } else {
       setFormError(res.error || 'Authentication failed. Please verify credentials.');
@@ -90,7 +93,7 @@ export default function Login() {
     if (res.success) {
       setSuccessMsg('Account created successfully! Redirecting...');
       setTimeout(() => {
-        navigate(getDestination(role), { replace: true });
+        navigate('/apply', { replace: true });
       }, 1000);
     } else {
       setFormError(res.error || 'Registration failed.');
@@ -331,55 +334,7 @@ export default function Login() {
                 </div>
               </div>
 
-              {/* Role Selection */}
-              <div className="space-y-1.5 pt-1">
-                <label className="text-xs font-semibold text-slate-300">Select Platform Role</label>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <label
-                    className={`p-3 rounded-xl border cursor-pointer flex flex-col gap-1 transition-all ${
-                      role === 'underwriter'
-                        ? 'bg-indigo-600/15 border-indigo-500 text-white'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="role"
-                      value="underwriter"
-                      checked={role === 'underwriter'}
-                      onChange={() => setRole('underwriter')}
-                      className="sr-only"
-                    />
-                    <div className="flex items-center gap-1.5 font-bold">
-                      <Building2 className="h-3.5 w-3.5 text-indigo-400" />
-                      <span>Underwriter</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400">Review queue & credit dossiers</span>
-                  </label>
-
-                  <label
-                    className={`p-3 rounded-xl border cursor-pointer flex flex-col gap-1 transition-all ${
-                      role === 'borrower'
-                        ? 'bg-emerald-500/15 border-emerald-500 text-white'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="role"
-                      value="borrower"
-                      checked={role === 'borrower'}
-                      onChange={() => setRole('borrower')}
-                      className="sr-only"
-                    />
-                    <div className="flex items-center gap-1.5 font-bold">
-                      <Briefcase className="h-3.5 w-3.5 text-emerald-400" />
-                      <span>Borrower</span>
-                    </div>
-                    <span className="text-[10px] text-slate-400">Micro-enterprise applicant</span>
-                  </label>
-                </div>
-              </div>
+              <p className="text-xs text-slate-400">New accounts are borrowers. Underwriter access is assigned by a platform administrator.</p>
 
               <button
                 type="submit"
@@ -439,7 +394,7 @@ export default function Login() {
           )}
 
           {/* 1-CLICK EVALUATION DEMO ACCOUNTS (Part 24) */}
-          <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
+          {DEMO_ENABLED && <div className="pt-4 border-t border-slate-800/80 space-y-2.5">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                 1-Click Instant Evaluation
@@ -492,12 +447,12 @@ export default function Login() {
                 </div>
               </button>
             </div>
-          </div>
+          </div>}
         </div>
 
         {/* Security / Privacy Banner */}
         <div className="text-center text-[11px] text-slate-500 flex items-center justify-center gap-2">
-          <span>Protected under DPDP Act & RBI Digital Lending Guidelines</span>
+          <span>Prototype for educational evaluation</span>
           <span>•</span>
           <Link to="/privacy-security" className="text-slate-400 hover:text-slate-300 underline">
             Privacy Center

@@ -9,12 +9,11 @@ import {
   CheckCircle2,
   Clock,
   ChevronRight,
-  TrendingUp,
   Activity
 } from 'lucide-react';
 import BarChart from '../charts/BarChart';
 import DonutChart from '../charts/DonutChart';
-import LineAreaChart from '../charts/LineAreaChart';
+import { summarizePortfolio } from '../../lib/portfolio';
 import type { Applicant, ReviewStatus } from '../../types/underwriter';
 
 interface OverviewViewProps {
@@ -35,57 +34,15 @@ export default function OverviewView({
   onNavigateToRisk
 }: OverviewViewProps) {
   const [filterRisk, setFilterRisk] = useState<'ALL' | 'LOW' | 'MODERATE' | 'HIGH'>('ALL');
-  const [trendView, setTrendView] = useState<'VOLUME' | 'SCORE'>('VOLUME');
 
-  // KPI calculations based on current applicants and database telemetry
-  const totalApplicants = 1284;
-  const avgTrustScore = 71.4;
-  const lowRiskPct = 42.2;
-  const reviewRequiredCount = applicants.filter(a => a.status === 'PENDING_REVIEW' || a.status === 'NEEDS_INFO').length || 142;
-
-  // Chart A: Trust Score Distribution Histogram
-  const scoreDistributionData = [
-    { label: '< 50', value: 42, color: '#f43f5e' },
-    { label: '50–65', value: 184, color: '#f59e0b' },
-    { label: '65–75', value: 560, color: '#6366f1' },
-    { label: '75–85', value: 418, color: '#10b981' },
-    { label: '85–100', value: 80, color: '#06b6d4' }
-  ];
-
-  // Chart B: Risk Distribution Donut
-  const riskDonutData = [
-    { label: 'Low Risk', value: 542, color: '#10b981' },
-    { label: 'Moderate Risk', value: 586, color: '#6366f1' },
-    { label: 'High Risk', value: 156, color: '#f43f5e' }
-  ];
-
-  // Chart C & D: Underwriting Volume & Trust Score Trends (6 Months)
-  const trendLabels = ['May 2026', 'Jun 2026', 'Jul 2026', 'Aug 2026', 'Sep 2026', 'Oct 2026'];
-  const volumeSeries = [
-    {
-      name: 'Total Applications Received',
-      data: [180, 210, 245, 290, 312, 345],
-      color: '#6366f1'
-    },
-    {
-      name: 'Underwritten & Sanctioned',
-      data: [120, 145, 172, 201, 218, 242],
-      color: '#10b981'
-    }
-  ];
-
-  const scoreSeries = [
-    {
-      name: 'Portfolio Average Trust Score',
-      data: [68.5, 69.2, 70.0, 70.8, 71.1, 71.4],
-      color: '#10b981'
-    },
-    {
-      name: 'High Risk Share (%)',
-      data: [16.4, 15.1, 14.2, 13.5, 12.8, 12.2],
-      color: '#f43f5e'
-    }
-  ];
+  const metrics = summarizePortfolio(applicants);
+  const totalApplicants = metrics.total;
+  const avgTrustScore = metrics.averageScore;
+  const lowRiskPct = metrics.lowRiskPercentage;
+  const reviewRequiredCount = metrics.pending;
+  const scoreDistributionData = metrics.scoreDistribution;
+  const riskDonutData = metrics.riskDistribution;
+  const alerts = applicants.filter(a => a.riskTrajectory === 'DETERIORATING' || (a.anomalyScore ?? 0) >= 50);
 
   // Filtered recent applications
   const filteredApplicants = applicants.filter(app => {
@@ -181,7 +138,7 @@ export default function OverviewView({
             </span>
           </div>
           <div className="mt-1 text-[11px] text-slate-400 font-medium">
-            <span className="text-emerald-400 font-semibold">+14.2%</span> active month-over-month
+            Applications in the loaded queue
           </div>
         </div>
 
@@ -200,7 +157,7 @@ export default function OverviewView({
             <span className="text-xs text-slate-400 font-mono-numbers">/ 100</span>
           </div>
           <div className="mt-1 text-[11px] text-slate-400 font-medium">
-            <span className="text-emerald-400 font-semibold">+1.8 pts</span> portfolio baseline
+            Calculated from loaded applicant scores
           </div>
         </div>
 
@@ -218,7 +175,7 @@ export default function OverviewView({
             </span>
           </div>
           <div className="mt-1 text-[11px] text-slate-400 font-medium">
-            542 micro-borrowers in Prime Tier
+            {metrics.riskCounts.LOW} applicants in the low risk band
           </div>
         </div>
 
@@ -263,7 +220,7 @@ export default function OverviewView({
               </p>
             </div>
             <span className="text-xs font-mono-numbers text-indigo-400 font-semibold px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20">
-              Median: 72.0
+              Median: {metrics.median}
             </span>
           </div>
 
@@ -273,14 +230,12 @@ export default function OverviewView({
               height={220}
               showGrid={true}
               unit=" applicants"
-              benchmarkValue={400}
-              benchmarkLabel="Healthy Target (400)"
             />
           </div>
 
           <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-            <span>Primary concentration sits in Moderate (65–75) & Prime (75–85)</span>
-            <span className="font-mono-numbers text-slate-400">Total: 1,284 Profiles</span>
+            <span>Counts update with the loaded review queue</span>
+            <span className="font-mono-numbers text-slate-400">Total: {metrics.total} Profiles</span>
           </div>
         </div>
 
@@ -309,82 +264,23 @@ export default function OverviewView({
               size={190}
               strokeWidth={28}
               centerLabel="Active Book"
-              centerSub="1,284"
+              centerSub={String(metrics.total)}
             />
           </div>
 
           <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-            <span>Low Risk: <strong className="text-emerald-400 font-mono-numbers">42.2%</strong></span>
-            <span>Moderate: <strong className="text-indigo-300 font-mono-numbers">45.6%</strong></span>
-            <span>High: <strong className="text-rose-400 font-mono-numbers">12.2%</strong></span>
+            <span>Low Risk: <strong className="text-emerald-400 font-mono-numbers">{metrics.lowRiskPercentage}%</strong></span>
+            <span>Moderate: <strong className="text-indigo-300 font-mono-numbers">{metrics.total ? Math.round(metrics.riskCounts.MODERATE / metrics.total * 100) : 0}%</strong></span>
+            <span>High: <strong className="text-rose-400 font-mono-numbers">{metrics.total ? Math.round(metrics.riskCounts.HIGH / metrics.total * 100) : 0}%</strong></span>
           </div>
         </div>
       </div>
 
-      {/* ================================================== */}
-      {/* ROW 3: LARGE TREND VISUALIZATION */}
-      {/* ================================================== */}
-      <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800/80 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
-          <div>
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-indigo-400" />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                C & D. Underwriting & Portfolio Trends
-              </h2>
-            </div>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              6-month temporal tracking of application intake, sanction rate, and portfolio credit quality.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <div className="inline-flex p-1 rounded-xl bg-slate-950 border border-slate-800 text-xs">
-              <button
-                type="button"
-                onClick={() => setTrendView('VOLUME')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  trendView === 'VOLUME'
-                    ? 'bg-indigo-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Applications & Sanctions
-              </button>
-              <button
-                type="button"
-                onClick={() => setTrendView('SCORE')}
-                className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                  trendView === 'SCORE'
-                    ? 'bg-indigo-600 text-white font-semibold'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Trust Score & Risk Trend
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Visual Line / Area Trend Chart */}
-        <div>
-          {trendView === 'VOLUME' ? (
-            <LineAreaChart
-              labels={trendLabels}
-              series={volumeSeries}
-              height={220}
-              unit=" files"
-            />
-          ) : (
-            <LineAreaChart
-              labels={trendLabels}
-              series={scoreSeries}
-              height={220}
-              unit=" pts"
-            />
-          )}
-        </div>
-      </div>
+      <section className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800/80 space-y-3">
+        <h2 className="text-sm font-semibold text-white">Application status</h2>
+        <p className="text-xs text-slate-400">Current queue snapshot. Historical trends require recorded snapshots over time.</p>
+        <BarChart data={metrics.statusDistribution} horizontal />
+      </section>
 
       {/* ================================================== */}
       {/* ROW 4: RECENT APPLICATIONS TABLE + COMPACT ALERTS PANEL */}
@@ -524,67 +420,28 @@ export default function OverviewView({
                 </h2>
               </div>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono-numbers">
-                2 Critical
+                {alerts.length} Flagged
               </span>
             </div>
 
             <div className="space-y-3 pt-3">
-              {/* Alert 1 */}
-              <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-500/30 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-rose-300">Suresh Patel</span>
-                  <span className="text-[10px] font-mono-numbers text-rose-400">Score 69 (-9 pts)</span>
+              {alerts.length === 0 && <p className="text-xs text-slate-400">No flagged applicants in the loaded queue.</p>}
+              {alerts.map(applicant => (
+                <div key={applicant.id} className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 space-y-2">
+                  <div className="flex justify-between text-xs"><strong>{applicant.name}</strong><span>Score {applicant.trustScore}</span></div>
+                  <p className="text-xs text-slate-400">{applicant.riskTrajectory === 'DETERIORATING' ? 'Deteriorating signal trajectory. Review supporting evidence.' : 'Anomaly flag requires manual review.'}</p>
+                  <button className="text-xs text-indigo-300 underline" onClick={() => { onSelectApplicant(applicant); onNavigateToRisk(); }}>Inspect applicant</button>
                 </div>
-                <p className="text-[11px] text-slate-300 leading-snug">
-                  ⚠ Supplier repayment declined from 90% to 68% with two late rental clearances.
-                </p>
-                <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
-                  <span>Trajectory: DETERIORATING</span>
-                  <button
-                    onClick={() => {
-                      const sp = applicants.find(a => a.name.includes('Suresh'));
-                      if (sp) onSelectApplicant(sp);
-                      onNavigateToRisk();
-                    }}
-                    className="text-rose-400 hover:text-rose-300 font-semibold underline"
-                  >
-                    Inspect →
-                  </button>
-                </div>
-              </div>
-
-              {/* Alert 2 */}
-              <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-500/30 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-amber-300">Fatima Bi</span>
-                  <span className="text-[10px] font-mono-numbers text-amber-400">High Anomaly Flag</span>
-                </div>
-                <p className="text-[11px] text-slate-300 leading-snug">
-                  ⚠ Discrepancy between stated weekly volume and UPI QR settle logs.
-                </p>
-                <div className="text-[10px] text-slate-400 pt-1 flex items-center justify-between">
-                  <span>Verification: NEEDS_REVIEW</span>
-                  <button
-                    onClick={() => {
-                      const fb = applicants.find(a => a.name.includes('Fatima'));
-                      if (fb) onSelectApplicant(fb);
-                      onNavigateToRisk();
-                    }}
-                    className="text-amber-400 hover:text-amber-300 font-semibold underline"
-                  >
-                    Inspect →
-                  </button>
-                </div>
-              </div>
+              ))}
             </div>
           </div>
 
           <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
             <span className="flex items-center gap-1.5">
               <Activity className="h-3.5 w-3.5 text-emerald-400" />
-              Surveillance Status
+              Review status
             </span>
-            <span className="text-emerald-400 font-semibold font-mono-numbers">Continuous 24/7</span>
+            <span className="text-emerald-400 font-semibold font-mono-numbers">On demand</span>
           </div>
         </div>
       </div>

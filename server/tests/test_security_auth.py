@@ -4,7 +4,7 @@ import io
 from fastapi.testclient import TestClient
 from app.main import app
 
-client = TestClient(app)
+client = TestClient(app, headers={"Authorization": "Bearer demo-underwriter-token"})
 
 
 # ------------------------------------------------------------
@@ -68,13 +68,9 @@ def test_scoring_invalid_negative_values():
 # 2. AUTHENTICATION & RBAC (Part 3, 4, 8)
 # ------------------------------------------------------------
 
-def test_auth_me_default_guest():
-    """Verify unauthenticated request receives safe evaluation session."""
-    response = client.get("/api/v1/auth/me")
-    assert response.status_code == 200
-    data = response.json()
-    assert "user_id" in data
-    assert "role" in data
+def test_auth_me_rejects_guest():
+    response = TestClient(app).get("/api/v1/auth/me")
+    assert response.status_code == 401
 
 
 def test_auth_me_demo_borrower_token():
@@ -111,7 +107,7 @@ def test_security_status_endpoint():
     response = client.get("/api/v1/security/status")
     assert response.status_code == 200
     data = response.json()
-    assert data["rls_enforced"] is True
+    assert data["rls_enforced"] is False
     assert data["rbac_active"] is True
     assert "borrower" in data["supported_roles"]
     assert "underwriter" in data["supported_roles"]

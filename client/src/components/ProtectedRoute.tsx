@@ -1,4 +1,5 @@
 import React from 'react';
+import { DEMO_ENABLED } from '../lib/auth';
 import { Navigate, useLocation, Link } from 'react-router-dom';
 import { useAuth, type UserRole } from '../context/AuthContext';
 import { ShieldAlert, Loader2, ArrowLeft, LogIn } from 'lucide-react';
@@ -71,13 +72,13 @@ export default function ProtectedRoute({ children, allowedRoles }: ProtectedRout
               Borrower Portal
             </Link>
 
-            <button
+            {user.isDemo && DEMO_ENABLED && <button
               onClick={() => loginAsDemo('underwriter')}
               className="flex-1 py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
             >
               <LogIn className="h-3.5 w-3.5" />
               Switch to Underwriter
-            </button>
+            </button>}
           </div>
         </div>
       </div>

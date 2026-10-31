@@ -3,24 +3,22 @@ import {
   X, 
   Sparkles, 
   UserCheck, 
-  TrendingUp, 
-  Receipt, 
   Clock, 
   CheckCircle2, 
   AlertTriangle, 
   FileCheck2, 
   MapPin, 
   Store, 
-  Layers, 
   ChevronRight, 
-  FileText,
-  Loader2,
-  Camera,
-  Building,
-  QrCode
+  FileText, 
+  Loader2, 
+  Camera, 
+  Building, 
+  QrCode 
 } from 'lucide-react';
 import type { Applicant, ProofDocument, ReviewStatus } from '../types/underwriter';
 import { explainUnderwritingApi, type UnderwritingExplanationResult } from '../lib/api';
+import TrustScoreBentoCard from './cockpit/TrustScoreBentoCard';
 
 interface DossierModalProps {
   applicant: Applicant;
@@ -43,8 +41,6 @@ export default function DossierModal({ applicant, onClose, onAction }: DossierMo
     model_used: 'gemini-2.5-flash',
     human_decision_required: true
   });
-
-  const weeklyInstallment = Math.round(applicant.requestedAmount / applicant.repaymentWeeks);
 
   const handleConfirmDecision = () => {
     if (!confirmationAction) return;
@@ -140,127 +136,8 @@ export default function DossierModal({ applicant, onClose, onAction }: DossierMo
         {/* ================= SCROLLABLE BODY ================= */}
         <div className="p-6 space-y-8 overflow-y-auto flex-grow custom-scrollbar">
           
-          {/* 1. TOP STATS & 3-PILLAR BREAKDOWN */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 bg-slate-950/70 border border-white/5 rounded-xl p-5 sm:p-6 shadow-xl">
-            
-            {/* Trust Score Radial Display */}
-            <div className="lg:col-span-4 flex flex-col items-center justify-center text-center lg:border-r lg:border-white/5 lg:pr-6">
-              <span className="text-xs uppercase font-extrabold tracking-wider text-slate-400">
-                Composite Trust Score
-              </span>
-              
-              <div className="relative w-36 h-36 flex items-center justify-center my-3">
-                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 120 120">
-                  <circle
-                    cx="60"
-                    cy="60"
-                    r="50"
-                    className="text-slate-800 stroke-current"
-                    strokeWidth="10"
-                    fill="transparent"
-                  />
-                  <circle
-                    cx="60"
-                    cy="60"
-                    r="50"
-                    className={`${applicant.trustScore >= 70 ? 'text-emerald-500' : 'text-amber-500'} stroke-current transition-all duration-700 ease-out`}
-                    strokeWidth="10"
-                    strokeDasharray={314}
-                    strokeDashoffset={314 - (314 * applicant.trustScore) / 100}
-                    strokeLinecap="round"
-                    fill="transparent"
-                  />
-                </svg>
-                <div className="absolute flex flex-col items-center">
-                  <span className="text-4xl font-black text-white font-mono-numbers">{applicant.trustScore}</span>
-                  <span className="text-[11px] font-semibold text-slate-500 font-mono-numbers">/ 100</span>
-                </div>
-              </div>
-
-              <span className={`text-xs px-3 py-0.5 rounded-full font-bold border ${
-                applicant.trustScore >= 70 
-                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25' 
-                  : 'bg-amber-500/10 text-amber-400 border-amber-500/25'
-              }`}>
-                {applicant.confidenceTier}
-              </span>
-              <span className="text-[10px] text-slate-500 mt-1">
-                Deterministic 3-Pillar Calculation
-              </span>
-            </div>
-
-            {/* 3 Pillars Visual Meters */}
-            <div className="lg:col-span-8 flex flex-col justify-center space-y-4">
-              <div className="flex items-center justify-between pb-1 border-b border-white/5">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-                  <Layers className="h-4 w-4 text-indigo-400" />
-                  3-Pillar Mathematical Breakdown
-                </span>
-                <span className="text-[11px] text-slate-500 font-mono-numbers">Formula: 40% + 35% + 25% = 100%</span>
-              </div>
-
-              {/* Pillar 1: Ability */}
-              <div>
-                <div className="flex justify-between items-center text-xs font-semibold mb-1">
-                  <span className="text-slate-300 flex items-center gap-1.5">
-                    <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
-                    Ability to Repay (40% Weight)
-                  </span>
-                  <span className="text-emerald-400 font-bold font-mono-numbers">{applicant.pillars.ability} / 100</span>
-                </div>
-                <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-emerald-500 rounded-full transition-all duration-500" 
-                    style={{ width: `${applicant.pillars.ability}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-slate-500 mt-0.5 block">
-                  Weekly cashflow <strong className="text-slate-300 font-mono-numbers">₹{applicant.weeklyRevenue.toLocaleString()}</strong> covers weekly EMI (<strong className="text-slate-300 font-mono-numbers">₹{weeklyInstallment}</strong>) comfortably.
-                </span>
-              </div>
-
-              {/* Pillar 2: Willingness */}
-              <div>
-                <div className="flex justify-between items-center text-xs font-semibold mb-1">
-                  <span className="text-slate-300 flex items-center gap-1.5">
-                    <Receipt className="h-3.5 w-3.5 text-indigo-400" />
-                    Willingness to Repay (35% Weight)
-                  </span>
-                  <span className="text-indigo-400 font-bold font-mono-numbers">{applicant.pillars.willingness} / 100</span>
-                </div>
-                <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-indigo-500 rounded-full transition-all duration-500" 
-                    style={{ width: `${applicant.pillars.willingness}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-slate-500 mt-0.5 block">
-                  Weighted payment punctuality across stall rent, wholesale suppliers, and telecom recharges.
-                </span>
-              </div>
-
-              {/* Pillar 3: Stability */}
-              <div>
-                <div className="flex justify-between items-center text-xs font-semibold mb-1">
-                  <span className="text-slate-300 flex items-center gap-1.5">
-                    <Clock className="h-3.5 w-3.5 text-amber-400" />
-                    Stability of Activity (25% Weight)
-                  </span>
-                  <span className="text-amber-400 font-bold font-mono-numbers">{applicant.pillars.stability} / 100</span>
-                </div>
-                <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-amber-500 rounded-full transition-all duration-500" 
-                    style={{ width: `${applicant.pillars.stability}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-slate-500 mt-0.5 block">
-                  Operational continuity at physical stall ({applicant.stallTenureMonths} mo) + community peer participation.
-                </span>
-              </div>
-            </div>
-
-          </div>
+          {/* 1. TOP STATS: INTERACTIVE BENTO-STYLE TRUST SCORE & 3-PILLAR BREAKDOWN */}
+          <TrustScoreBentoCard applicant={applicant} />
 
           {/* 2. 6 SIGNALS DEEP-DIVE CARDS */}
           <div>

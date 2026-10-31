@@ -64,6 +64,7 @@ export default function PortfolioAnalyticsView() {
 
   return (
     <div className="space-y-6 pb-12 animate-in fade-in duration-200">
+      <p role="note" className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm">Illustrative analytics: these charts use synthetic fixtures. Filters are presentation controls and do not query a live portfolio. Use Dashboard for summaries of the loaded queue.</p>
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-slate-900/70 border border-slate-800/80">
         <div>

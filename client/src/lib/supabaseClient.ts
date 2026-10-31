@@ -9,4 +9,9 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Allow the synthetic-data demo to start without a configured remote project.
+export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+export const supabase = createClient(
+  supabaseUrl || 'https://unconfigured.supabase.co',
+  supabaseAnonKey || 'unconfigured-public-key'
+);
